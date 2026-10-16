@@ -5,6 +5,9 @@ import { createAuthModule } from "../src/auth.js";
 import { DevAuthProvider } from "@4evergent/shared";
 import type { Signer } from "@4evergent/stellar";
 import type { AddressInfo } from "node:net";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Keypair } from "@stellar/stellar-sdk";
 import {
   InMemoryActivityStore,
@@ -91,6 +94,10 @@ const ROUTES: RouteContract[] = [
   { method: "POST", path: "/auth/login/email", auth: "public", status: 200, keys: ["subject"] },
   { method: "POST", path: "/auth/stellar/challenge", auth: "public", status: 200, keys: ["challengeId", "message", "expiresAt", "network"] },
   { method: "POST", path: "/auth/stellar/verify", auth: "public", status: 200, keys: ["session"] },
+  { method: "GET", path: "/auth/me", auth: "protected", status: 200, keys: ["subject", "ownerId", "method"] },
+  { method: "GET", path: "/auth/google/start", auth: "public", status: 503, keys: ["error", "requiredEnv"] },
+  { method: "GET", path: "/auth/google/callback", auth: "public", status: 302 },
+  { method: "POST", path: "/auth/logout", auth: "public", status: 204 },
 
   // ---- Protected routes (anonymous → 401) ----
   { method: "POST", path: "/agents", auth: "protected", status: 201, keys: ["agent"], sample: () => ({
@@ -311,6 +318,38 @@ const ROUTES: RouteContract[] = [
     needsQueue: true,
   },
   {
+    method: "POST",
+    path: "/approvals/:id/approve",
+    auth: "protected",
+    status: 200,
+    keys: ["approvalId", "activityId", "status", "message"],
+    sample: (ids) => ({ path: `/approvals/${ids.approvalId}/approve`, init: { method: "POST" } }),
+  },
+  {
+    method: "POST",
+    path: "/approvals/:id/reject",
+    auth: "protected",
+    status: 200,
+    keys: ["approvalId", "activityId", "status", "message"],
+    sample: (ids) => ({ path: `/approvals/${ids.approvalId}/reject`, init: { method: "POST" } }),
+  },
+  {
+    method: "POST",
+    path: "/agents/:id/schedules/:scheduleId/resume",
+    auth: "protected",
+    status: 200,
+    keys: ["schedule"],
+    sample: (ids) => ({ path: `/agents/${ids.agentId}/schedules/${ids.scheduleId}/resume`, init: { method: "POST" } }),
+  },
+  {
+    method: "POST",
+    path: "/agents/:id/schedules/:scheduleId/disable",
+    auth: "protected",
+    status: 200,
+    keys: ["schedule"],
+    sample: (ids) => ({ path: `/agents/${ids.agentId}/schedules/${ids.scheduleId}/disable`, init: { method: "POST" } }),
+  },
+  {
     method: "DELETE",
     path: "/agents/:id/schedules/:scheduleId",
     auth: "protected",
@@ -338,7 +377,9 @@ class MockSigner implements Signer {
 }
 
 async function apiFetch(url: string, init?: RequestInit) {
-  return fetch(url, { ...init, keepalive: false });
+  // redirect: "manual" keeps the raw response (e.g. 302 from /auth/google/callback)
+  // instead of following cross-origin redirects the test server can't serve.
+  return fetch(url, { ...init, keepalive: false, redirect: "manual" });
 }
 
 interface Harness {
@@ -565,18 +606,114 @@ async function seedFixtures(stores: {
 }
 
 // ============================================================================
+// Route inventory — parsed from the dispatch chain source
+// ============================================================================
+// The API dispatch chain (apps/api/src/index.ts:627-716) and the auth module
+// (apps/api/src/auth.ts handleRoutes) register routes as a flat sequence of
+// `method === "M" && <path test>` conditions. Extracting them from the
+// source gives an INDEPENDENT inventory: if a route is added to either file
+// without a matching entry in the ROUTES table, the drift check below fails.
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+
+interface InventoryRoute {
+  method: string;
+  /** Regex source of the path test, e.g. ^\\/agents\\/([^/]+)$ */
+  pattern?: string;
+  /** Simple `url === "..."` comparison, when the route uses one. */
+  literal?: string;
+}
+
+function extractRoutesFrom(source: string): InventoryRoute[] {
+  const routes: InventoryRoute[] = [];
+  // Matches: method === "GET" && url === "/health"
+  //          method === "GET" && /^\/agents\/[^/]+$/.test(url)
+  //          method === "GET" && path === "/auth/config"
+  const re =
+    /method\s*===\s*"(GET|POST|PUT|PATCH|DELETE)"\s*&&\s*(?:url|path)\s*===\s*"([^"]+)"|method\s*===\s*"(GET|POST|PUT|PATCH|DELETE)"\s*&&\s*(\/\^.*?\/)\.test\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    if (m[2] !== undefined) {
+      routes.push({ method: m[1]!, literal: m[2] });
+    } else if (m[4] !== undefined) {
+      routes.push({ method: m[3]!, pattern: m[4] });
+    }
+  }
+  return routes;
+}
+
+/**
+ * Normalizes a route to a canonical template so the source's regex form and
+ * the table's `:param` form compare equal.
+ *
+ *   ^\/agents\/[^/]+$                      → /agents/<id>
+ *   ^\/agents\/[^/]+\/activity(\?.*)?$     → /agents/<id>/activity
+ *   ^\/agents\/[^/]+\/(pause|resume|disable)$ → 3 templates, one per action
+ */
+function canonicalTemplates(raw: string): string[] {
+  const s = raw
+    // Strip regex literal delimiters: /^\/agents$/
+    .replace(/^\/(.*)\/$/, "$1")
+    .replace(/^\^/, "")
+    .replace(/\$$/, "")
+    .replace(/\\\//g, "/")
+    .replace(/\(\?:/g, "(")
+    // Drop optional query-string suffixes — the path is the same route.
+    .replace(/\(\\\?\.\*\)\?/g, "")
+    .replace(/\(\?\.\*\)\?/g, "")
+    .replace(/\[\^\/\]\+/g, "<id>")
+    .replace(/:([A-Za-z]+)/g, "<id>");
+
+  // Expand a single alternation group into one template per alternative.
+  const alt = s.match(/\(([^()]+)\)/);
+  if (alt && alt[1]!.includes("|")) {
+    return alt[1]!
+      .split("|")
+      .map((a) => s.replace(alt[0]!, a));
+  }
+  return [s];
+}
+
+function inventoryMatchesTable(inv: InventoryRoute[], table: RouteContract[]): string[] {
+  const declared = new Set<string>();
+  for (const t of table) {
+    for (const tpl of canonicalTemplates(t.path)) declared.add(`${t.method} ${tpl}`);
+  }
+
+  const missing: string[] = [];
+  for (const r of inv) {
+    const templates = canonicalTemplates(r.literal ?? r.pattern!);
+    for (const tpl of templates) {
+      if (!declared.has(`${r.method} ${tpl}`)) {
+        missing.push(`${r.method} ${tpl}`);
+      }
+    }
+  }
+  return [...new Set(missing)];
+}
+
+// ============================================================================
 // Contract assertions
 // ============================================================================
 
-test("route table enumerates the full API surface", () => {
-  // Guard against the table silently shrinking. The dispatch chain in
-  // apps/api/src/index.ts:627-716 serves 30 routes; auth.ts adds 7 public
-  // /auth/* routes. Update these counts when you add a route.
-  const protectedCount = ROUTES.filter((r) => r.auth === "protected").length;
-  const publicCount = ROUTES.filter((r) => r.auth === "public").length;
+test("route table covers every route the server registers (drift check)", () => {
+  // Parse the dispatch chain and auth module directly — an independent
+  // inventory. A route added to either file without a table entry makes
+  // THIS test fail, not a hand-maintained count.
+  const apiSrc = readFileSync(join(TEST_DIR, "..", "src", "index.ts"), "utf8");
+  const authSrc = readFileSync(join(TEST_DIR, "..", "src", "auth.ts"), "utf8");
 
-  assert.equal(protectedCount, 27, "protected route count changed — update the table and this count");
-  assert.equal(publicCount, 6, "public route count changed — update the table and this count");
+  const apiRoutes = extractRoutesFrom(apiSrc);
+  const authRoutes = extractRoutesFrom(authSrc);
+  assert.ok(apiRoutes.length >= 30, `expected at least 30 routes in index.ts, found ${apiRoutes.length}`);
+  assert.ok(authRoutes.length >= 9, `expected at least 9 routes in auth.ts, found ${authRoutes.length}`);
+
+  const missing = inventoryMatchesTable([...apiRoutes, ...authRoutes], ROUTES);
+  assert.deepEqual(
+    missing,
+    [],
+    `routes registered by the server but missing from the ROUTES table — add them:\n  ${missing.join("\n  ")}`
+  );
 
   // Every entry must be uniquely addressable.
   const seen = new Set<string>();
