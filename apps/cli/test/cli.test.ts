@@ -277,6 +277,55 @@ test("CLI: approval reject → exit 0", () => {
   assert.match(r.stdout, /rejected/);
 });
 
+test("CLI: approval get → calls GET /approvals/:id and prints decision fields", () => {
+  const r = run(["approval", "get", "ap-1"], {
+    responses: [
+      {
+        match: "/approvals/ap-1",
+        status: 200,
+        body: {
+          approval: {
+            id: "ap-1",
+            status: "pending_approval",
+            intent: { type: "payment", amount: "500", asset: "XLM", destination: "GDEST" },
+            policyDecision: { result: "requires_approval", reason: "above threshold", rule: "approvalThreshold" },
+            requesterId: "agent-1",
+            approverId: null,
+            expiresAt: "2026-01-01T01:00:00Z",
+            activityId: "act-1",
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(r.code, 0);
+  assert.equal(r.requests[0]?.method, "GET");
+  assert.equal(r.requests[0]?.path, "/approvals/ap-1");
+  assert.match(r.stdout, /ap-1/);
+  assert.match(r.stdout, /pending_approval/);
+  assert.match(r.stdout, /payment/);
+  assert.match(r.stdout, /500/);
+  assert.match(r.stdout, /GDEST/);
+  assert.match(r.stdout, /approvalThreshold/);
+  assert.match(r.stdout, /2026-01-01T01:00:00Z/);
+  assert.match(r.stdout, /act-1/);
+});
+
+test("CLI: approval get without id → usage on stderr, exit 1", () => {
+  const r = run(["approval", "get"]);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /approval get <id>/);
+});
+
+test("CLI: approval get 404 → exit 1 with clear message", () => {
+  const r = run(["approval", "get", "nope"], {
+    responses: [{ match: "/approvals/nope", status: 404, body: { error: "not found" } }],
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /404/);
+  assert.match(r.stderr, /not found/);
+});
+
 test("CLI: execution list → calls GET /executions (N+1 removed)", () => {
   const r = run(["execution", "list"], {
     responses: [
@@ -1047,6 +1096,7 @@ interface CliHandlersModule {
   cmdScheduleResume: (agentId: string, scheduleId: string) => Promise<number>;
   cmdScheduleDisable: (agentId: string, scheduleId: string) => Promise<number>;
   cmdScheduleDelete: (agentId: string, scheduleId: string) => Promise<number>;
+  cmdApprovalGet: (id: string) => Promise<number>;
 }
 
 let cachedHandlersPromise: Promise<CliHandlersModule> | null = null;
@@ -1071,6 +1121,7 @@ function loadCliHandlers(): Promise<CliHandlersModule> {
   cmdScheduleResume,
   cmdScheduleDisable,
   cmdScheduleDelete,
+  cmdApprovalGet,
 };\n`
       );
       const unitWrapperPath = CLI.replace(/\.ts$/, ".unit-wrapper.mts");
