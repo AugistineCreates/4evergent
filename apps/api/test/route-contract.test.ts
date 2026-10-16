@@ -93,7 +93,7 @@ const ROUTES: RouteContract[] = [
   { method: "POST", path: "/auth/register", auth: "public", status: 201, keys: ["subject"] },
   { method: "POST", path: "/auth/login/email", auth: "public", status: 200, keys: ["subject"] },
   { method: "POST", path: "/auth/stellar/challenge", auth: "public", status: 200, keys: ["challengeId", "message", "expiresAt", "network"] },
-  { method: "POST", path: "/auth/stellar/verify", auth: "public", status: 200, keys: ["session"] },
+  { method: "POST", path: "/auth/stellar/verify", auth: "public", status: 200, keys: ["subject"] },
   { method: "GET", path: "/auth/me", auth: "protected", status: 200, keys: ["subject", "ownerId", "method"] },
   { method: "GET", path: "/auth/google/start", auth: "public", status: 503, keys: ["error", "requiredEnv"] },
   { method: "GET", path: "/auth/google/callback", auth: "public", status: 302 },
@@ -822,50 +822,115 @@ test("every non-auth route's success path returns its documented status code and
   }
 });
 
-test("auth routes complete their documented success flows", async () => {
+test("every /auth/* route returns its documented success status and top-level keys", async () => {
   const { baseUrl, close } = await startHarness();
+  // Shared sequential state: register issues the session cookie /auth/me and
+  // /auth/logout need, and the challenge issues the id+message the signed
+  // verify needs. Order below reflects those dependencies.
+  let cookie: string | null = null;
+  let challengeId: string | null = null;
+  let challengeMessage: string | null = null;
+  const kp = Keypair.random();
+
+  const jsonInit = (body: unknown): RequestInit => ({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  // Assert against the ROUTES table itself — the documented contract is the
+  // thing under test, so a wrong status or missing key in the table fails.
+  const assertContract = async (method: string, path: string, res: Response) => {
+    const entry = ROUTES.find((r) => r.method === method && r.path === path);
+    assert.ok(entry, `ROUTES table has no entry for ${method} ${path}`);
+    assert.equal(
+      res.status,
+      entry.status,
+      `${method} ${path} must return ${entry.status} on the success path (got ${res.status})`
+    );
+    if (entry.keys && entry.keys.length > 0) {
+      const body = await res.json();
+      for (const key of entry.keys) {
+        assert.ok(key in body, `${method} ${path} response must contain top-level key '${key}'`);
+      }
+    }
+  };
+
+  const exercised: string[] = [];
   try {
-    // /auth/register → 201 { subject }
-    const reg = await apiFetch(`${baseUrl}/auth/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "contract@example.com", password: "password123" }),
-    });
-    assert.equal(reg.status, 201);
-    assert.ok((await reg.json()).subject, "register must return subject");
+    // GET /auth/config
+    exercised.push("GET /auth/config");
+    await assertContract("GET", "/auth/config", await apiFetch(`${baseUrl}/auth/config`));
 
-    // /auth/login/email → 200 { subject } with the same credentials
-    const login = await apiFetch(`${baseUrl}/auth/login/email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "contract@example.com", password: "password123" }),
-    });
-    assert.equal(login.status, 200);
-    assert.ok((await login.json()).subject, "login must return subject");
+    // POST /auth/register — also captures the session cookie
+    exercised.push("POST /auth/register");
+    const reg = await apiFetch(
+      `${baseUrl}/auth/register`,
+      jsonInit({ email: "contract@example.com", password: "password123", displayName: "Contract" })
+    );
+    const setCookie = reg.headers.get("set-cookie");
+    cookie = setCookie ? setCookie.split(";")[0]! : null;
+    assert.ok(cookie, "register must issue a session cookie for /auth/me");
+    await assertContract("POST", "/auth/register", reg);
 
-    // /auth/stellar/challenge → 200, then a signed verify → 200
-    const kp = Keypair.random();
-    const challenge = await apiFetch(`${baseUrl}/auth/stellar/challenge`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ publicKey: kp.publicKey() }),
-    });
-    assert.equal(challenge.status, 200);
-    const chBody = await challenge.json();
-    assert.ok(chBody.challengeId && chBody.message, "challenge must return challengeId + message");
+    // GET /auth/me — authenticated with the cookie register issued
+    exercised.push("GET /auth/me");
+    await assertContract("GET", "/auth/me", await apiFetch(`${baseUrl}/auth/me`, { headers: { Cookie: cookie } }));
 
-    const verify = await apiFetch(`${baseUrl}/auth/stellar/verify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        publicKey: kp.publicKey(),
-        challengeId: chBody.challengeId,
-        signature: kp.sign(Buffer.from(chBody.message)).toString("base64"),
-      }),
-    });
-    assert.equal(verify.status, 200, "signed verify must return 200");
-    const verifyBody = await verify.json();
-    assert.ok(verifyBody.session?.token || verifyBody.subject, "verify must return a session token");
+    // POST /auth/login/email
+    exercised.push("POST /auth/login/email");
+    await assertContract(
+      "POST",
+      "/auth/login/email",
+      await apiFetch(`${baseUrl}/auth/login/email`, jsonInit({ email: "contract@example.com", password: "password123" }))
+    );
+
+    // POST /auth/stellar/challenge — captures challengeId + message
+    exercised.push("POST /auth/stellar/challenge");
+    const challenge = await apiFetch(`${baseUrl}/auth/stellar/challenge`, jsonInit({ publicKey: kp.publicKey() }));
+    const chBody = await challenge.clone().json();
+    challengeId = chBody.challengeId;
+    challengeMessage = chBody.message;
+    assert.ok(challengeId && challengeMessage, "challenge must return challengeId + message");
+    await assertContract("POST", "/auth/stellar/challenge", challenge);
+
+    // POST /auth/stellar/verify — signed challenge, completes the wallet login
+    exercised.push("POST /auth/stellar/verify");
+    await assertContract(
+      "POST",
+      "/auth/stellar/verify",
+      await apiFetch(
+        `${baseUrl}/auth/stellar/verify`,
+        jsonInit({
+          publicKey: kp.publicKey(),
+          challengeId,
+          signature: kp.sign(Buffer.from(challengeMessage!)).toString("base64"),
+        })
+      )
+    );
+
+    // GET /auth/google/start — 503 google_oauth_not_configured without env
+    exercised.push("GET /auth/google/start");
+    await assertContract("GET", "/auth/google/start", await apiFetch(`${baseUrl}/auth/google/start`));
+
+    // GET /auth/google/callback — 302 back to the web origin (redirect: manual)
+    exercised.push("GET /auth/google/callback");
+    await assertContract("GET", "/auth/google/callback", await apiFetch(`${baseUrl}/auth/google/callback`));
+
+    // POST /auth/logout — 204, clears the cookie
+    exercised.push("POST /auth/logout");
+    await assertContract(
+      "POST",
+      "/auth/logout",
+      await apiFetch(`${baseUrl}/auth/logout`, { method: "POST", headers: { Cookie: cookie } })
+    );
+
+    // No /auth/* route may be left unasserted.
+    const authRoutes = ROUTES.filter((r) => r.path.startsWith("/auth/"));
+    const unasserted = authRoutes
+      .map((r) => `${r.method} ${r.path}`)
+      .filter((k) => !exercised.includes(k));
+    assert.deepEqual(unasserted, [], `auth routes with no success-path assertion:\n  ${unasserted.join("\n  ")}`);
   } finally {
     await close();
   }
