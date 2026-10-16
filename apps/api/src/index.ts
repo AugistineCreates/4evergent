@@ -820,20 +820,23 @@ export async function createApiServer(options: ServerOptions) {
     if (!allowed) return json(res, { error: "not found" }, 404);
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
-    const all = await store.listByAgent(agentId, offset + limit + 1);
-    const activity = all.slice(offset, offset + limit);
-    const hasMore = all.length > offset + limit;
+    const all = await store.listByAgent(agentId, limit + 1, offset);
+    const activity = all.slice(0, limit);
+    const hasMore = all.length > limit;
     return json(res, { agentId, activity, hasMore });
   }
 
   async function handleListApprovals(ctx: RequestContext, req: any, res: any) {
     const urlObj = new URL(req.url ?? "", "http://localhost");
     const statusFilter = urlObj.searchParams.get("status") ?? undefined;
-    const all = await approvals.listByOwner(ctx.ownerId!, 200);
-    const filtered = statusFilter
-      ? all.filter((r) => r.status === statusFilter).slice(0, 50)
-      : all.slice(0, 50);
-    return json(res, { approvals: filtered });
+    const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
+    const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
+    // Read limit+1 rows at the store level so `hasMore` is exact and the read
+    // is bounded regardless of how large `offset` is.
+    const rows = await approvals.listByOwner(ctx.ownerId!, limit + 1, offset, statusFilter);
+    const approvalsPage = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
+    return json(res, { approvals: approvalsPage, hasMore });
   }
 
   async function handleGetApproval(ctx: RequestContext, req: any, res: any) {
@@ -975,10 +978,9 @@ export async function createApiServer(options: ServerOptions) {
     const statusFilter = urlObj.searchParams.get("status") ?? undefined;
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
-    const all = await approvals.listByAgent(agentId, 200);
-    const filtered = statusFilter ? all.filter((r) => r.status === statusFilter) : all;
-    const page = filtered.slice(offset, offset + limit);
-    const hasMore = filtered.length > offset + limit;
+    const rows = await approvals.listByAgent(agentId, limit + 1, offset, statusFilter);
+    const page = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
     return json(res, { agentId, approvals: page, hasMore });
   }
 
@@ -1014,9 +1016,9 @@ export async function createApiServer(options: ServerOptions) {
     if (!allowed) return json(res, { error: "not found" }, 404);
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
-    const all = await schedules.listByAgent(agentId, offset + limit + 1);
-    const page = all.slice(offset, offset + limit);
-    const hasMore = all.length > offset + limit;
+    const all = await schedules.listByAgent(agentId, limit + 1, offset);
+    const page = all.slice(0, limit);
+    const hasMore = all.length > limit;
     return json(res, { agentId, schedules: page, hasMore });
   }
 
@@ -1222,9 +1224,9 @@ export async function createApiServer(options: ServerOptions) {
     const urlObj = new URL(req.url ?? "", "http://localhost");
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
-    const all = await executionStore.listByOwner(ctx.ownerId!, offset + limit + 1);
-    const executions = all.slice(offset, offset + limit);
-    const hasMore = all.length > offset + limit;
+    const all = await executionStore.listByOwner(ctx.ownerId!, limit + 1, offset);
+    const executions = all.slice(0, limit);
+    const hasMore = all.length > limit;
     return json(res, { executions, hasMore });
   }
 
@@ -1232,9 +1234,9 @@ export async function createApiServer(options: ServerOptions) {
     const urlObj = new URL(req.url ?? "", "http://localhost");
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
-    const all = await store.listByOwner(ctx.ownerId!, offset + limit + 1);
-    const activity = all.slice(offset, offset + limit);
-    const hasMore = all.length > offset + limit;
+    const all = await store.listByOwner(ctx.ownerId!, limit + 1, offset);
+    const activity = all.slice(0, limit);
+    const hasMore = all.length > limit;
     return json(res, { activity, hasMore });
   }
 
