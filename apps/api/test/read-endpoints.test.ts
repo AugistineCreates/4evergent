@@ -6,8 +6,8 @@ import type { Signer } from "@4evergent/stellar";
 import type { PolicyRules } from "@4evergent/shared";
 import type { AddressInfo } from "node:net";
 import { Keypair } from "@stellar/stellar-sdk";
-import { InMemoryExecutionStore, InMemoryScheduleStore, InMemoryApprovalStore } from "@4evergent/database";
-import type { ExecutionStore, ExecutionRecord, ScheduleRecord, ApprovalStore, ApprovalRecord } from "@4evergent/database";
+import { InMemoryExecutionStore, InMemoryScheduleStore, InMemoryApprovalStore, InMemoryActivityStore } from "@4evergent/database";
+import type { ExecutionStore, ExecutionRecord, ScheduleRecord, ApprovalStore, ApprovalRecord, ActivityStore, ActivityRecord } from "@4evergent/database";
 
 declare const fetch: typeof globalThis.fetch;
 
@@ -46,6 +46,7 @@ async function startServer(opts?: { policyRules?: Partial<PolicyRules>; register
   const executionStore = new InMemoryExecutionStore();
   const scheduleStore = new InMemoryScheduleStore();
   const approvalStore = new InMemoryApprovalStore();
+  const activityStore = new InMemoryActivityStore();
   const server = await createApiServer({
     port: 0,
     horizonUrl: "https://horizon-testnet.stellar.org",
@@ -56,6 +57,7 @@ async function startServer(opts?: { policyRules?: Partial<PolicyRules>; register
     executionStore,
     scheduleStore,
     approvalStore,
+    activityStore,
   });
   if (opts?.registerAgent !== false) {
     server.registerAgent(TEST_AGENT);
@@ -67,6 +69,7 @@ async function startServer(opts?: { policyRules?: Partial<PolicyRules>; register
     executionStore: ExecutionStore;
     scheduleStore: InMemoryScheduleStore;
     approvalStore: ApprovalStore;
+    activityStore: ActivityStore;
   }>((resolve) => {
     const http = server.server.listen(0, "127.0.0.1", () => {
       const addr = http.address() as AddressInfo;
@@ -76,6 +79,7 @@ async function startServer(opts?: { policyRules?: Partial<PolicyRules>; register
         executionStore,
         scheduleStore,
         approvalStore,
+        activityStore,
       });
     });
   });
@@ -373,6 +377,26 @@ function makeApproval(overrides: Partial<ApprovalRecord> = {}): ApprovalRecord {
     expiresAt: null,
     txHash: null,
     error: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function makeActivity(overrides: Partial<ActivityRecord> = {}): ActivityRecord {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    ownerId: "test",
+    agentId: "test-agent",
+    intent: { type: "payment", asset: "XLM", destination: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", amount: "50", reason: "activity pagination test" },
+    policyDecision: { decision: "allow", reasons: [] } as any,
+    authorizationStatus: "not_required",
+    status: "pending",
+    txHash: null,
+    simulationResult: null,
+    error: null,
+    idempotencyKey: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -954,6 +978,150 @@ test("GET /executions with malformed and very large offsets", async () => {
     assert.equal(huge.status, 200);
     assert.equal(huge.body.executions.length, 0);
     assert.equal(huge.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+// ===== Offset ceiling terminates pagination =====
+
+// The store clamps offsets to MAX_OFFSET (10_000). Without an explicit guard a
+// page served AT the ceiling would still report hasMore=true, and the client's
+// next request (offset 10_050) would be clamped back to 10_000 and re-serve the
+// same records — an infinite "Load more" loop. Pagination must terminate at the
+// ceiling and never repeat a record.
+test("GET /executions stops paginating at the offset ceiling without repeating records", async () => {
+  const { baseUrl, close, executionStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    // More records than the ceiling so hasMore would otherwise stay true.
+    for (let i = 0; i < 10_050; i++) {
+      await executionStore.record(
+        makeExecution({ status: "confirmed", updatedAt: new Date(Date.now() + i).toISOString() })
+      );
+    }
+
+    const atCeiling = await get(baseUrl, "/executions?limit=50&offset=10000");
+    assert.equal(atCeiling.status, 200);
+    assert.equal(atCeiling.body.executions.length, 50);
+    assert.equal(atCeiling.body.hasMore, false, "pagination must terminate at the ceiling");
+
+    // A request past the ceiling clamps back to the ceiling — it must be
+    // treated as the end of the list, not as another page.
+    const pastCeiling = await get(baseUrl, "/executions?limit=50&offset=10050");
+    assert.equal(pastCeiling.status, 200);
+    assert.equal(pastCeiling.body.hasMore, false);
+
+    // The two responses are the same window (that is the clamp), so a client
+    // that stops on hasMore=false never appends duplicates.
+    const ceilingIds = new Set(atCeiling.body.executions.map((e: any) => e.id));
+    assert.equal(ceilingIds.size, 50);
+    for (const e of pastCeiling.body.executions) {
+      assert.ok(ceilingIds.has(e.id), "past-ceiling request returns the clamped window");
+    }
+  } finally {
+    await close();
+  }
+});
+
+test("GET /activity stops paginating at the offset ceiling", async () => {
+  const { baseUrl, close, activityStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" }, requireHumanApprovalForAmountAbove: "10" },
+  });
+  try {
+    for (let i = 0; i < 10_010; i++) {
+      await activityStore.record(makeActivity({ createdAt: new Date(Date.now() + i).toISOString() }));
+    }
+
+    const atCeiling = await get(baseUrl, "/activity?limit=50&offset=10000");
+    assert.equal(atCeiling.status, 200);
+    assert.equal(atCeiling.body.activity.length, 10);
+    assert.equal(atCeiling.body.hasMore, false);
+
+    const pastCeiling = await get(baseUrl, "/activity?limit=50&offset=10050");
+    assert.equal(pastCeiling.status, 200);
+    assert.equal(pastCeiling.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /agents/:id/executions stops paginating at the offset ceiling", async () => {
+  const { baseUrl, close, executionStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    for (let i = 0; i < 10_020; i++) {
+      await executionStore.record(
+        makeExecution({ status: "confirmed", updatedAt: new Date(Date.now() + i).toISOString() })
+      );
+    }
+
+    const atCeiling = await get(baseUrl, "/agents/test-agent/executions?limit=50&offset=10000");
+    assert.equal(atCeiling.status, 200);
+    assert.equal(atCeiling.body.executions.length, 20);
+    assert.equal(atCeiling.body.hasMore, false);
+
+    const pastCeiling = await get(baseUrl, "/agents/test-agent/executions?limit=50&offset=10050");
+    assert.equal(pastCeiling.status, 200);
+    assert.equal(pastCeiling.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /approvals stops paginating at the offset ceiling", async () => {
+  const { baseUrl, close, approvalStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" }, requireHumanApprovalForAmountAbove: "10" },
+  });
+  try {
+    for (let i = 0; i < 10_030; i++) {
+      await approvalStore.record(
+        makeApproval({ createdAt: new Date(Date.now() + i).toISOString() })
+      );
+    }
+
+    const atCeiling = await get(baseUrl, "/approvals?limit=50&offset=10000");
+    assert.equal(atCeiling.status, 200);
+    assert.equal(atCeiling.body.approvals.length, 30);
+    assert.equal(atCeiling.body.hasMore, false);
+
+    const pastCeiling = await get(baseUrl, "/approvals?limit=50&offset=10050");
+    assert.equal(pastCeiling.status, 200);
+    assert.equal(pastCeiling.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("offset just below the ceiling still reports hasMore correctly", async () => {
+  const { baseUrl, close, executionStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    for (let i = 0; i < 10_010; i++) {
+      await executionStore.record(
+        makeExecution({ status: "confirmed", updatedAt: new Date(Date.now() + i).toISOString() })
+      );
+    }
+
+    // offset 9950 + limit 50 = 10000, still below the ceiling: one more page
+    // is reachable, so hasMore stays true.
+    const below = await get(baseUrl, "/executions?limit=50&offset=9950");
+    assert.equal(below.status, 200);
+    assert.equal(below.body.executions.length, 50);
+    assert.equal(below.body.hasMore, true);
+
+    // The next page starts exactly at the ceiling and terminates.
+    const atCeiling = await get(baseUrl, "/executions?limit=50&offset=10000");
+    assert.equal(atCeiling.body.executions.length, 10);
+    assert.equal(atCeiling.body.hasMore, false);
+
+    const belowIds = new Set(below.body.executions.map((e: any) => e.id));
+    for (const e of atCeiling.body.executions) {
+      assert.ok(!belowIds.has(e.id), "the final page must not repeat the previous page");
+    }
   } finally {
     await close();
   }

@@ -460,4 +460,4 @@ export {
 } from "./shared-connection.js";
 
 // Pagination bounds (shared by every list* store method)
-export { MAX_OFFSET, MAX_PAGE_LIMIT, clampOffset, clampLimit } from "./pagination.js";
+export { MAX_OFFSET, MAX_PAGE_LIMIT, clampOffset, clampLimit, isOffsetAtCeiling } from "./pagination.js";

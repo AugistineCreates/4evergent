@@ -25,3 +25,17 @@ export function clampLimit(limit: number | undefined | null, max = MAX_PAGE_LIMI
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.min(Math.floor(n), max);
 }
+
+/**
+ * True when the requested offset is at or beyond the hard ceiling.
+ *
+ * The store clamps the offset down to MAX_OFFSET, so a client asking for
+ * offset 10_050 would silently receive the offset-10_000 page again. Callers
+ * must treat this as the end of the list (hasMore = false) so a "Load more"
+ * button cannot loop forever appending the same records.
+ */
+export function isOffsetAtCeiling(offset: number | undefined | null): boolean {
+  const n = Number(offset ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  return Math.floor(n) >= MAX_OFFSET;
+}

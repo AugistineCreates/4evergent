@@ -46,6 +46,7 @@ import {
   type ActivityRecord,
   type PolicyConfigStore,
   createActivity,
+  isOffsetAtCeiling,
 } from "@4evergent/database";
 import type { PolicyRules, Agent, RequestContext, AuthorizationService, AuthProvider, AuthenticatedPrincipal } from "@4evergent/shared";
 import { createAuthModule, type PrincipalResolution } from "./auth.js";
@@ -822,7 +823,7 @@ export async function createApiServer(options: ServerOptions) {
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
     const all = await store.listByAgent(agentId, limit + 1, offset);
     const activity = all.slice(0, limit);
-    const hasMore = all.length > limit;
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
     return json(res, { agentId, activity, hasMore });
   }
 
@@ -832,10 +833,12 @@ export async function createApiServer(options: ServerOptions) {
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
     // Read limit+1 rows at the store level so `hasMore` is exact and the read
-    // is bounded regardless of how large `offset` is.
+    // is bounded regardless of how large `offset` is. At the MAX_OFFSET
+    // ceiling the store would clamp the offset back down and re-serve the
+    // same page, so hasMore is forced false to terminate pagination.
     const rows = await approvals.listByOwner(ctx.ownerId!, limit + 1, offset, statusFilter);
     const approvalsPage = rows.slice(0, limit);
-    const hasMore = rows.length > limit;
+    const hasMore = rows.length > limit && !isOffsetAtCeiling(offset);
     return json(res, { approvals: approvalsPage, hasMore });
   }
 
@@ -980,7 +983,7 @@ export async function createApiServer(options: ServerOptions) {
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
     const rows = await approvals.listByAgent(agentId, limit + 1, offset, statusFilter);
     const page = rows.slice(0, limit);
-    const hasMore = rows.length > limit;
+    const hasMore = rows.length > limit && !isOffsetAtCeiling(offset);
     return json(res, { agentId, approvals: page, hasMore });
   }
 
@@ -1018,7 +1021,7 @@ export async function createApiServer(options: ServerOptions) {
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
     const all = await schedules.listByAgent(agentId, limit + 1, offset);
     const page = all.slice(0, limit);
-    const hasMore = all.length > limit;
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
     return json(res, { agentId, schedules: page, hasMore });
   }
 
@@ -1170,7 +1173,7 @@ export async function createApiServer(options: ServerOptions) {
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
     const all = await executionStore.listByAgent(agentId, limit + 1, offset);
     const executions = all.slice(0, limit);
-    const hasMore = all.length > limit;
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
     return json(res, { agentId, executions, hasMore });
   }
 
@@ -1226,7 +1229,7 @@ export async function createApiServer(options: ServerOptions) {
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
     const all = await executionStore.listByOwner(ctx.ownerId!, limit + 1, offset);
     const executions = all.slice(0, limit);
-    const hasMore = all.length > limit;
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
     return json(res, { executions, hasMore });
   }
 
@@ -1236,7 +1239,7 @@ export async function createApiServer(options: ServerOptions) {
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
     const all = await store.listByOwner(ctx.ownerId!, limit + 1, offset);
     const activity = all.slice(0, limit);
-    const hasMore = all.length > limit;
+    const hasMore = all.length > limit && !isOffsetAtCeiling(offset);
     return json(res, { activity, hasMore });
   }
 
