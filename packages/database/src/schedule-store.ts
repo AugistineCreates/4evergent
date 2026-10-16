@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { AgentIntent } from "@4evergent/shared";
 import type { ScheduleStore, ScheduleRecord } from "./schedule-types.js";
 import { getSharedConnection } from "./shared-connection.js";
-import { clampOffset, clampLimit, MAX_PAGE_LIMIT } from "./pagination.js";
+import { clampOffset, clampLimit } from "./pagination.js";
 
 /**
  * InMemoryScheduleStore — process-local schedule log.
