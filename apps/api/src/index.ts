@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { log, generateRequestId, runRequestIdContext } from "./logging.js";
 import type {
   AgentIntent,
   AuthorizationStatus,
@@ -481,6 +481,37 @@ export async function createApiServer(options: ServerOptions) {
     const url = req.url ?? "";
     const method = req.method ?? "GET";
 
+    // Phase 28L: Request logging with correlation IDs.
+    // Assigned before any handler runs so every response — including
+    // OPTIONS preflights and 401/404 errors — carries X-Request-Id.
+    const suppliedId = req.headers["x-request-id"];
+    const requestId = generateRequestId(
+      Array.isArray(suppliedId) ? suppliedId[0] : suppliedId,
+    );
+    res.setHeader("X-Request-Id", requestId);
+
+    const requestStart = Date.now();
+    let ownerId: string | null = null;
+    let logged = false;
+
+    const originalEnd = res.end.bind(res);
+    res.end = function (...args: any[]) {
+      if (!logged) {
+        logged = true;
+        const durationMs = Date.now() - requestStart;
+        const status = res.statusCode || 0;
+        log(status >= 500 ? "error" : "info", "request completed", {
+          method,
+          path: new URL(url, "http://localhost").pathname,
+          status,
+          durationMs,
+          requestId,
+          ownerId,
+        });
+      }
+      return originalEnd(...args);
+    };
+
     // Handle CORS preflight (OPTIONS) — does NOT bypass authentication for
     // actual API requests. Preflight is unauthenticated but returns no data.
     if (method === "OPTIONS") {
@@ -526,7 +557,9 @@ export async function createApiServer(options: ServerOptions) {
     // Phase 28K-1: Authenticate and create request-scoped context
     const resolution = await authenticateRequest(req, method);
     const requestScopedCtx = principalToContext(resolution.principal);
+    ownerId = requestScopedCtx.ownerId;
 
+    return runRequestIdContext(requestId, () => {
     return als.run(requestScopedCtx, () => {
       // Health check is public
       if (method === "GET" && url === "/health") {
@@ -637,6 +670,7 @@ export async function createApiServer(options: ServerOptions) {
     }
     json(res, { error: "not found" }, 404);
     }); // End als.run
+    }); // End runRequestIdContext
   });
 
   async function handleListAgents(ctx: RequestContext, _req: any, res: any) {
@@ -1680,5 +1714,4 @@ function parseIntent(body: unknown): AgentIntent {
   }
 }
 
-void randomUUID;
 void TESTNET_PASSPHRASE;
