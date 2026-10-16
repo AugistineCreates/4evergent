@@ -1669,7 +1669,7 @@ function json(res: any, body: unknown, status = 200) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req: any): Promise<string> {
+export function readBody(req: any): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
     req.on("data", (chunk: Buffer) => {
