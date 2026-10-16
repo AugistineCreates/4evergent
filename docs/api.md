@@ -418,6 +418,97 @@ Queue summary for the caller's executions. Returns
 
 ---
 
+## Dashboard (owner-scoped listing endpoints)
+
+These three endpoints were added as dashboard convenience routes to eliminate
+N+1 fetch patterns. All are owner-scoped: every request must be authenticated
+and only returns data belonging to the authenticated `ownerId`.
+
+### GET /activity
+
+List all activity records across every agent owned by the caller.
+
+**Auth:** required (owner-scoped).
+
+Query parameters:
+
+| Parameter | Default | Max | Description |
+|---|---|---|---|
+| `limit` | `50` | `100` | Maximum number of records to return. Values outside 1–100 are clamped. |
+
+Response `200`:
+
+```json
+{
+  "activity": [ActivityRecord]
+}
+```
+
+`ActivityRecord` fields are defined in `packages/shared/src/types.ts`.
+
+---
+
+### GET /agents/:id/spending
+
+Return the current day's spending breakdown for a single agent,
+computed from the agent's active policy rules and the day's reserved
+spending totals.
+
+**Auth:** required (owner-scoped). `404` if the agent is not found or not
+owned by the caller.
+
+Response `200`:
+
+```json
+{
+  "agentId": "<id>",
+  "spending": {
+    "XLM": {
+      "used": 12.5,
+      "limit": "500",
+      "remaining": 487.5
+    }
+  }
+}
+```
+
+The `spending` value is a `Record<string, { used: number; limit: string; remaining: number }>`.
+Each key is a policy asset identifier (e.g. `XLM`, `CODE:ISSUER`). Only
+assets listed in the agent's `dailySpendingLimit` policy appear in the
+response. `remaining` is clamped to `0` — it will never be negative.
+
+---
+
+### GET /overview/attention
+
+Return headline counters for items that need the owner's attention.
+All counts are owner-scoped — they reflect the authenticated owner's
+data only.
+
+**Auth:** required (owner-scoped).
+
+Response `200`:
+
+```json
+{
+  "pendingApprovals": 3,
+  "failedExecutions": 1,
+  "deadLetterExecutions": 0,
+  "retryingExecutions": 2,
+  "stuckExecutions": 0
+}
+```
+
+| Field | Description |
+|---|---|
+| `pendingApprovals` | Approvals in `pending_approval` state owned by the caller. |
+| `failedExecutions` | Executions in `failed` state. |
+| `deadLetterExecutions` | Executions in `dead_letter` state. |
+| `retryingExecutions` | Executions in `queued` state (awaiting retry). |
+| `stuckExecutions` | Executions in `executing` state (may be hung). |
+
+---
+
 ## Notes
 
 - Response shapes above are the primary success shapes; record fields
