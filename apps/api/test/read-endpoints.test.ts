@@ -6,8 +6,8 @@ import type { Signer } from "@4evergent/stellar";
 import type { PolicyRules } from "@4evergent/shared";
 import type { AddressInfo } from "node:net";
 import { Keypair } from "@stellar/stellar-sdk";
-import { InMemoryExecutionStore } from "@4evergent/database";
-import type { ExecutionStore, ExecutionRecord } from "@4evergent/database";
+import { InMemoryExecutionStore, InMemoryScheduleStore } from "@4evergent/database";
+import type { ExecutionStore, ExecutionRecord, ScheduleRecord } from "@4evergent/database";
 
 declare const fetch: typeof globalThis.fetch;
 
@@ -44,6 +44,7 @@ const TEST_AGENT = {
 
 async function startServer(opts?: { policyRules?: Partial<PolicyRules>; registerAgent?: boolean }) {
   const executionStore = new InMemoryExecutionStore();
+  const scheduleStore = new InMemoryScheduleStore();
   const server = await createApiServer({
     port: 0,
     horizonUrl: "https://horizon-testnet.stellar.org",
@@ -52,6 +53,7 @@ async function startServer(opts?: { policyRules?: Partial<PolicyRules>; register
     deferExecution: true,
     authProvider: new DevAuthProvider({ defaultOwnerId: "test" }),
     executionStore,
+    scheduleStore,
   });
   if (opts?.registerAgent !== false) {
     server.registerAgent(TEST_AGENT);
@@ -61,6 +63,7 @@ async function startServer(opts?: { policyRules?: Partial<PolicyRules>; register
     baseUrl: string;
     close: () => Promise<void>;
     executionStore: ExecutionStore;
+    scheduleStore: InMemoryScheduleStore;
   }>((resolve) => {
     const http = server.server.listen(0, "127.0.0.1", () => {
       const addr = http.address() as AddressInfo;
@@ -68,6 +71,7 @@ async function startServer(opts?: { policyRules?: Partial<PolicyRules>; register
         baseUrl: `http://127.0.0.1:${addr.port}`,
         close: () => server.close(),
         executionStore,
+        scheduleStore,
       });
     });
   });
@@ -303,6 +307,24 @@ test("read endpoints never return raw XDR or transaction blobs", async () => {
 
 // ===== Execution lifecycle visibility =====
 
+function makeSchedule(overrides: Partial<ScheduleRecord> = {}): ScheduleRecord {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    agentId: "test-agent",
+    ownerId: "test",
+    status: "active",
+    intent: { type: "payment", asset: "XLM", destination: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", amount: "10", reason: "scheduled test" },
+    scheduleExpression: "0 0 * * *",
+    timezone: "UTC",
+    nextRunAt: new Date().toISOString(),
+    lastRunAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function makeExecution(overrides: Partial<ExecutionRecord> = {}): ExecutionRecord {
   const now = new Date().toISOString();
   return {
@@ -524,6 +546,184 @@ test("GET /activity respects limit", async () => {
     const res = await get(baseUrl, "/activity?limit=2");
     assert.equal(res.status, 200);
     assert.equal(res.body.activity.length, 2);
+  } finally {
+    await close();
+  }
+});
+
+// --- Pagination offset tests ---
+
+test("GET /activity offset returns next page and hasMore", async () => {
+  const { baseUrl, close } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" }, requireHumanApprovalForAmountAbove: "10" },
+  });
+  try {
+    for (let i = 0; i < 5; i++) {
+      await apiFetch(`${baseUrl}/agents/test-agent/intents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "payment",
+          asset: "XLM",
+          destination: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          amount: "50",
+          reason: `paginate test ${i}`,
+        }),
+      });
+    }
+    const page1 = await get(baseUrl, "/activity?limit=3&offset=0");
+    assert.equal(page1.status, 200);
+    assert.equal(page1.body.activity.length, 3);
+    assert.equal(page1.body.hasMore, true);
+
+    const page2 = await get(baseUrl, "/activity?limit=3&offset=3");
+    assert.equal(page2.status, 200);
+    assert.equal(page2.body.activity.length, 2);
+    assert.equal(page2.body.hasMore, false);
+
+    // Ensure no overlap
+    const page1Ids = new Set(page1.body.activity.map((a: any) => a.id));
+    for (const a of page2.body.activity) assert.ok(!page1Ids.has(a.id));
+  } finally {
+    await close();
+  }
+});
+
+test("GET /activity hasMore false when fewer than limit+1 items exist", async () => {
+  const { baseUrl, close } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" }, requireHumanApprovalForAmountAbove: "10" },
+  });
+  try {
+    for (let i = 0; i < 2; i++) {
+      await apiFetch(`${baseUrl}/agents/test-agent/intents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "payment",
+          asset: "XLM",
+          destination: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          amount: "50",
+          reason: `hasMore test ${i}`,
+        }),
+      });
+    }
+    const res = await get(baseUrl, "/activity?limit=5&offset=0");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.activity.length, 2);
+    assert.equal(res.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /executions offset pagination works", async () => {
+  const { baseUrl, close, executionStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    for (let i = 0; i < 4; i++) {
+      await executionStore.record(makeExecution({ status: "confirmed" }));
+    }
+    const page1 = await get(baseUrl, "/executions?limit=2&offset=0");
+    assert.equal(page1.status, 200);
+    assert.equal(page1.body.executions.length, 2);
+    assert.equal(page1.body.hasMore, true);
+
+    const page2 = await get(baseUrl, "/executions?limit=2&offset=2");
+    assert.equal(page2.status, 200);
+    assert.equal(page2.body.executions.length, 2);
+    assert.equal(page2.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /executions?offset without limit works", async () => {
+  const { baseUrl, close, executionStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    for (let i = 0; i < 3; i++) {
+      await executionStore.record(makeExecution({ status: "confirmed" }));
+    }
+    const res = await get(baseUrl, "/executions?offset=1");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.executions.length, 2);
+    assert.equal(res.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /agents/:id/activity offset pagination", async () => {
+  const { baseUrl, close } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    for (let i = 0; i < 3; i++) {
+      await apiFetch(`${baseUrl}/agents/test-agent/intents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "payment",
+          asset: "XLM",
+          destination: "GDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          amount: "50",
+          reason: `agent activity pagination ${i}`,
+        }),
+      });
+    }
+    const page1 = await get(baseUrl, "/agents/test-agent/activity?limit=2&offset=0");
+    assert.equal(page1.status, 200);
+    assert.equal(page1.body.activity.length, 2);
+    assert.equal(page1.body.hasMore, true);
+
+    const page2 = await get(baseUrl, "/agents/test-agent/activity?limit=2&offset=2");
+    assert.equal(page2.status, 200);
+    assert.equal(page2.body.activity.length, 1);
+    assert.equal(page2.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /agents/:id/executions offset pagination", async () => {
+  const { baseUrl, close, executionStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    for (let i = 0; i < 3; i++) {
+      await executionStore.record(makeExecution({ status: "confirmed" }));
+    }
+    const page1 = await get(baseUrl, "/agents/test-agent/executions?limit=2&offset=0");
+    assert.equal(page1.status, 200);
+    assert.equal(page1.body.executions.length, 2);
+    assert.equal(page1.body.hasMore, true);
+
+    const page2 = await get(baseUrl, "/agents/test-agent/executions?limit=2&offset=2");
+    assert.equal(page2.status, 200);
+    assert.equal(page2.body.executions.length, 1);
+    assert.equal(page2.body.hasMore, false);
+  } finally {
+    await close();
+  }
+});
+
+test("GET /agents/:id/schedules offset pagination", async () => {
+  const { baseUrl, close, scheduleStore } = await startServer({});
+  try {
+    for (let i = 0; i < 3; i++) {
+      await scheduleStore.create(makeSchedule());
+    }
+    const page1 = await get(baseUrl, "/agents/test-agent/schedules?limit=2&offset=0");
+    assert.equal(page1.status, 200);
+    assert.equal(page1.body.schedules.length, 2);
+    assert.equal(page1.body.hasMore, true);
+
+    const page2 = await get(baseUrl, "/agents/test-agent/schedules?limit=2&offset=2");
+    assert.equal(page2.status, 200);
+    assert.equal(page2.body.schedules.length, 1);
+    assert.equal(page2.body.hasMore, false);
   } finally {
     await close();
   }
