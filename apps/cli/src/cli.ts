@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * 4evergent Operator CLI — HTTP client for the 4evergent API.
  *

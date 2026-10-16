@@ -218,16 +218,22 @@ The `4evergent` CLI is an operator client that talks HTTP to the API server.
 It does NOT sign, build, or submit Stellar transactions — all transaction
 work stays server-side.
 
-```bash
-# Build and run (from repo root)
-pnpm --filter @4evergent/cli build
-npx tsx apps/cli/src/cli.ts health
+Install the published command with:
 
-# Configure
+```bash
+npm install --global @4evergent/cli
+```
+
+Configure `FOREGENT_API_URL` and, when using production authentication,
+`FOREGENT_API_KEY` in the shell where you run the command. See
+[the CLI guide](docs/cli.md) for configuration and available commands.
+
+```bash
+# Configure the API connection in the shell where you run the CLI
 export FOREGENT_API_URL=http://localhost:3000
 export FOREGENT_API_KEY=your-api-key
 
-# Usage
+# Use the installed command
 4evergent health
 4evergent agent list
 4evergent agent pause <id>
@@ -238,6 +244,13 @@ export FOREGENT_API_KEY=your-api-key
 4evergent activity list <agent-id>
 4evergent schedule list <agent-id>
 4evergent intent submit <agent-id> <type> [args...]
+```
+
+To run the source version from a repository checkout:
+
+```bash
+pnpm --filter @4evergent/cli build
+npx tsx apps/cli/src/cli.ts health
 ```
 
 See [docs/cli.md](docs/cli.md) for full command reference.

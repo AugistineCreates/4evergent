@@ -4,16 +4,16 @@
 an operator tool only — it does NOT sign transactions, build Stellar operations,
 or access Horizon directly. All transaction work is delegated to the API server.
 
-## Install / Build
+## Install
 
 ```bash
-# From repository root
-pnpm install
-pnpm --filter @4evergent/cli build
-
-# Run via npx (from repo root)
-npx tsx apps/cli/src/cli.ts health
+npm install --global @4evergent/cli
+4evergent --help
 ```
+
+The published package includes its built CLI and installs the `4evergent`
+command. To run the source version while developing this repository, install
+the workspace dependencies and use `pnpm --filter @4evergent/cli build`.
 
 ## Version
 
@@ -35,6 +35,10 @@ export FOREGENT_API_URL=http://localhost:3000
 export FOREGENT_API_KEY=your-api-key-here
 export FOREGENT_API_TIMEOUT_MS=5000
 ```
+
+Set these variables in the same shell before invoking `4evergent`; the API key
+is read from the environment and is never saved by the CLI. `FOREGENT_API_KEY`
+is optional when the API is running in development authentication mode.
 
 ## Commands
 
