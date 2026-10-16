@@ -737,6 +737,40 @@ test("GET /agents/:id/executions offset pagination", async () => {
   }
 });
 
+// Regression: agent executions must paginate past the first page even when the
+// offset exceeds the store's internal page clamp. The handler used to request
+// `offset + limit + 1` rows from the store, which the store clamped to its
+// maximum — so a large offset returned an empty page with hasMore=false while
+// executions still existed beyond it.
+test("GET /agents/:id/executions paginates past the first page with a large offset", async () => {
+  const { baseUrl, close, executionStore } = await startServer({
+    policyRules: { maxTxAmount: { XLM: "1000" } },
+  });
+  try {
+    for (let i = 0; i < 250; i++) {
+      await executionStore.record(
+        makeExecution({ status: "confirmed", updatedAt: new Date(Date.now() + i).toISOString() })
+      );
+    }
+
+    const page1 = await get(baseUrl, "/agents/test-agent/executions?limit=50&offset=0");
+    assert.equal(page1.status, 200);
+    assert.equal(page1.body.executions.length, 50);
+    assert.equal(page1.body.hasMore, true);
+
+    // offset 200 is past the store's 200-row clamp — must still return a page
+    const page5 = await get(baseUrl, "/agents/test-agent/executions?limit=50&offset=200");
+    assert.equal(page5.status, 200);
+    assert.equal(page5.body.executions.length, 50);
+    assert.equal(page5.body.hasMore, false);
+
+    const page1Ids = new Set(page1.body.executions.map((e: any) => e.id));
+    for (const e of page5.body.executions) assert.ok(!page1Ids.has(e.id));
+  } finally {
+    await close();
+  }
+});
+
 test("GET /agents/:id/schedules offset pagination", async () => {
   const { baseUrl, close, scheduleStore } = await startServer({});
   try {

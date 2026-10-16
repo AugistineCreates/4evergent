@@ -1168,9 +1168,9 @@ export async function createApiServer(options: ServerOptions) {
     if (!allowed) return json(res, { error: "not found" }, 404);
     const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
-    const all = await executionStore.listByAgent(agentId, offset + limit + 1);
-    const executions = all.slice(offset, offset + limit);
-    const hasMore = all.length > offset + limit;
+    const all = await executionStore.listByAgent(agentId, limit + 1, offset);
+    const executions = all.slice(0, limit);
+    const hasMore = all.length > limit;
     return json(res, { agentId, executions, hasMore });
   }
 
