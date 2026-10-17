@@ -830,16 +830,15 @@ export async function createApiServer(options: ServerOptions) {
   async function handleListApprovals(ctx: RequestContext, req: any, res: any) {
     const urlObj = new URL(req.url ?? "", "http://localhost");
     const statusFilter = urlObj.searchParams.get("status") ?? undefined;
-    const limit = Math.max(1, Math.min(100, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
+    const limit = Math.max(1, Math.min(200, Number(urlObj.searchParams.get("limit") ?? 50) || 50));
     const offset = Math.max(0, Number(urlObj.searchParams.get("offset") ?? 0) || 0);
-    // Read limit+1 rows at the store level so `hasMore` is exact and the read
-    // is bounded regardless of how large `offset` is. At the MAX_OFFSET
-    // ceiling the store would clamp the offset back down and re-serve the
-    // same page, so hasMore is forced false to terminate pagination.
-    const rows = await approvals.listByOwner(ctx.ownerId!, limit + 1, offset, statusFilter);
-    const approvalsPage = rows.slice(0, limit);
-    const hasMore = rows.length > limit && !isOffsetAtCeiling(offset);
-    return json(res, { approvals: approvalsPage, hasMore });
+    const rows = await approvals.listByOwner(ctx.ownerId!, limit, offset, statusFilter);
+    const total = await approvals.countByOwner(ctx.ownerId!, statusFilter);
+    // `truncated`: more matching rows exist beyond this page.
+    // `hasMore`: the client can actually fetch them (offset ceiling ends pagination).
+    const truncated = offset + rows.length < total;
+    const hasMore = truncated && !isOffsetAtCeiling(offset);
+    return json(res, { approvals: rows, hasMore, truncated, total });
   }
 
   async function handleGetApproval(ctx: RequestContext, req: any, res: any) {
@@ -1191,10 +1190,10 @@ export async function createApiServer(options: ServerOptions) {
     if (!executionQueue) {
       return json(res, { error: "execution queue not enabled" }, 404);
     }
-    const all = await executionStore.listByOwner(ctx.ownerId!, 200);
+    const execCounts = await executionStore.countByOwner(ctx.ownerId!);
     const byStatus: Record<string, number> = {};
-    for (const e of all) {
-      byStatus[e.status] = (byStatus[e.status] ?? 0) + 1;
+    for (const [status, count] of Object.entries(execCounts)) {
+      if (count > 0) byStatus[status] = count;
     }
     return json(res, {
       running: executionQueue.isRunning(),
@@ -1205,8 +1204,7 @@ export async function createApiServer(options: ServerOptions) {
 
   async function handleGetOverviewAttention(ctx: RequestContext, _req: any, res: any) {
     const ownerId = ctx.ownerId!;
-    const pendingApprovals = (await approvals.listByOwner(ownerId, 200))
-      .filter((a) => a.status === "pending_approval").length;
+    const pendingApprovals = await approvals.countByOwner(ownerId, "pending_approval");
     const execCounts: Record<ExecutionStatus, number> =
       await executionStore.countByOwner(ownerId);
     return json(res, {
