@@ -14,6 +14,7 @@
     "dev": "pnpm -r --parallel dev",
     "dev:watch": "pnpm --filter @4evergent/api dev",
     "test": "pnpm -r test",
+    "test:coverage": "node scripts/test-coverage.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint ."
   },
