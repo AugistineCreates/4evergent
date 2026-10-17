@@ -120,6 +120,21 @@ describe('Login page', () => {
     });
   });
 
+  it('renders a session-expiry notice when one is passed in', async () => {
+    // Keep authConfig pending so no post-render state update fires.
+    mockAuthConfig.mockReturnValue(new Promise(() => {}));
+    render(
+      <MemoryRouter>
+        <Login
+          onSuccess={vi.fn()}
+          notice="Your session has expired. Sign in again to continue where you left off."
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Your session has expired.');
+  });
+
   describe('Email authentication flow', () => {
     it('successfully logs in with valid email credentials', async () => {
       const onSuccess = vi.fn();

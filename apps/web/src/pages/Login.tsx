@@ -6,6 +6,11 @@ import LogoMark from '../components/LogoMark';
 
 interface LoginProps {
   onSuccess: () => void;
+  /**
+   * Optional context shown above the form — e.g. the session-expiry notice
+   * passed by RequireAuth. A generic load failure never sets this.
+   */
+  notice?: string;
 }
 
 interface AuthConfig {
@@ -50,7 +55,7 @@ async function freighterSign(message: string, address: string): Promise<string> 
   return btoa(String.fromCharCode(...Array.from(signed as unknown as Uint8Array)));
 }
 
-export default function Login({ onSuccess }: LoginProps) {
+export default function Login({ onSuccess, notice }: LoginProps) {
   const [config, setConfig] = useState<AuthConfig | null>(null);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
@@ -152,6 +157,12 @@ export default function Login({ onSuccess }: LoginProps) {
         <LogoMark className="auth-logo" size={32} />
         <h1>Welcome back</h1>
         <p className="muted">Sign in to your 4evergent account</p>
+
+        {notice && (
+          <div className="session-expiry-notice" role="alert">
+            {notice}
+          </div>
+        )}
 
         <div className="auth-providers">
           {config?.google && (

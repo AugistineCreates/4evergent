@@ -653,6 +653,18 @@ code.copyable:hover { text-decoration: underline; }
   margin-bottom: var(--space-xl);
 }
 
+/* Session-expiry notice: distinct from a generic load error so the user knows
+   why they are looking at the login screen. */
+.session-expiry-notice {
+  background: var(--color-warn-bg, rgba(255, 193, 7, 0.12));
+  border: 1px solid rgba(255, 193, 7, 0.35);
+  color: var(--color-warn, #ffc107);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-lg);
+}
+
 /* ---- provider buttons ---- */
 
 .auth-providers {

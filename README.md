@@ -178,6 +178,8 @@ pnpm --filter @4evergent/web dev
 
 The dashboard connects to `http://localhost:3000`. Set `VITE_API_BASE` env var to point to a different API URL. The dashboard is a local development tool — it provides read-only views of agents/activity/approvals and an XLM payment intent submission form. All policy enforcement, signing, and submission remain server-side.
 
+Sessions are server-issued HttpOnly cookies with a TTL (`SESSION_TTL_SECONDS`). If a session expires while a page is open, the dashboard detects the `401`, shows a "session expired" notice, and returns you to the login screen; signing in again restores the page you were on.
+
 Each package has its own `package.json` with `build`, `dev`, `test`, and `typecheck` scripts.
 
 ## Testnet setup

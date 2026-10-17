@@ -14,6 +14,21 @@ export class ApiError extends Error {
 }
 
 /**
+ * Window event dispatched when a session-authenticated request is rejected
+ * with 401 — i.e. the server-side session ended (see {@link isUnauthorizedError}).
+ * RequireAuth listens for it to show the session-expiry notice and return the
+ * user to the login screen. A 401 never means "retry": re-sending the same
+ * unauthenticated request cannot succeed.
+ */
+export const SESSION_EXPIRED_EVENT = '4evergent:session-expired';
+
+function notifySessionExpired(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
+}
+
+/**
  * Requests carry:
  *  - credentials: include → the HttpOnly session cookie (user login)
  *  - X-Requested-With → CSRF guard for cookie-authenticated state changes
@@ -39,12 +54,18 @@ async function request<T>(path: string, init?: RequestInit & { skipAuthClear?: b
   const body = res.status !== 204 ? await res.json().catch(() => null) : null;
   if (!res.ok) {
     const message = body?.error ?? `API error ${res.status}`;
-    // Probes (e.g. /auth/me during session bootstrap) must not wipe a stored
-    // legacy bearer token — the caller decides how to handle 401.
-    if (res.status === 401 && !skipAuthClear) {
+    const error = new ApiError(res.status, message);
+    // A 401 on a session-authenticated request means the session ended: clear
+    // stored credentials and notify the app (RequireAuth) so it can show the
+    // expiry notice and return to the login screen with the page location
+    // preserved. Probes and credential endpoints opt out via skipAuthClear —
+    // their 401 means "not signed in" / "bad credentials", which the caller or
+    // the login screen reports itself, and it must not be treated as expiry.
+    if (isUnauthorizedError(error) && !skipAuthClear) {
       clearAuth();
+      notifySessionExpired();
     }
-    throw new ApiError(res.status, message);
+    throw error;
   }
   return body as T;
 }
@@ -280,21 +301,24 @@ export const api = {
     ),
 
   register: (body: { email: string; password: string; displayName?: string }) =>
-    request<{ subject: string }>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
+    // skipAuthClear: a 401 here means invalid input, not an expired session.
+    request<{ subject: string }>('/auth/register', { method: 'POST', body: JSON.stringify(body), skipAuthClear: true }),
 
   loginEmail: (body: { email: string; password: string }) =>
-    request<{ subject: string }>('/auth/login/email', { method: 'POST', body: JSON.stringify(body) }),
+    // skipAuthClear: wrong credentials must not wipe state or raise the
+    // session-expiry path — the login screen shows its own error.
+    request<{ subject: string }>('/auth/login/email', { method: 'POST', body: JSON.stringify(body), skipAuthClear: true }),
 
   stellarChallenge: (publicKey: string) =>
     request<{ challengeId: string; message: string; expiresAt: string; network: string }>(
       '/auth/stellar/challenge',
-      { method: 'POST', body: JSON.stringify({ publicKey }) }
+      { method: 'POST', body: JSON.stringify({ publicKey }), skipAuthClear: true }
     ),
 
   stellarVerify: (body: { publicKey: string; challengeId: string; signature: string }) =>
-    request<{ subject: string }>('/auth/stellar/verify', { method: 'POST', body: JSON.stringify(body) }),
+    request<{ subject: string }>('/auth/stellar/verify', { method: 'POST', body: JSON.stringify(body), skipAuthClear: true }),
 
-  logout: () => request<null>('/auth/logout', { method: 'POST' }),
+  logout: () => request<null>('/auth/logout', { method: 'POST', skipAuthClear: true }),
 
   /** Full-page navigation target for the Google OAuth start (server-side flow). */
   authStartUrl: () => `${API_BASE}/auth/google/start`,

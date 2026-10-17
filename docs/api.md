@@ -19,6 +19,14 @@ All endpoints except `GET /health` require authentication.
 Unauthenticated requests to protected endpoints return
 `{"error":"unauthorized"}` with status `401`.
 
+**Client contract.** For a session-authenticated request (browser cookie), a
+`401` means the session ended — it is not a transient failure and must not be
+retried. The client clears its stored credentials, tells the user the session
+expired, and returns them to the login screen to re-authenticate. `401`s from
+the credential endpoints themselves (`POST /auth/login/email`,
+`POST /auth/register`, `POST /auth/stellar/*`) mean the supplied credentials
+were rejected and are surfaced as a login error instead.
+
 ## User Authentication (Browser Sessions)
 
 In addition to API-key auth for machine clients, the API supports

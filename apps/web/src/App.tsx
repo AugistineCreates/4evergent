@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect, useCallback } from 'react';
 import { getStoredToken, clearAuth } from './auth';
-import { api, ApiError } from './api';
+import { api, ApiError, SESSION_EXPIRED_EVENT } from './api';
 import Login from './pages/Login';
 import LogoMark from './components/LogoMark';
 import Landing from './pages/Landing';
@@ -48,8 +48,9 @@ async function validateSession(): Promise<boolean> {
   }
 }
 
-function RequireAuth({ children }: { children: React.ReactNode }) {
+export function RequireAuth({ children }: { children: React.ReactNode }) {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   const check = useCallback(() => {
     validateSession().then(setAuthenticated);
@@ -58,6 +59,25 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     check();
   }, [check]);
+
+  // React to an expiry that happens after mount, not only at mount. api.ts
+  // dispatches SESSION_EXPIRED_EVENT on any 401 from a session-authenticated
+  // request, so every page gets the same handling without its own detector.
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setSessionExpired(true);
+      setAuthenticated(false);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+  }, []);
+
+  const handleLoginSuccess = useCallback(() => {
+    // Recovery preserves the current URL — the router never left the page, so
+    // signing in remounts the same route and its data reloads.
+    setSessionExpired(false);
+    setAuthenticated(true);
+  }, []);
 
   if (authenticated === null) {
     return (
@@ -72,7 +92,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   }
 
   if (authenticated === false) {
-    return <Login onSuccess={() => setAuthenticated(true)} />;
+    return (
+      <Login
+        onSuccess={handleLoginSuccess}
+        notice={
+          sessionExpired
+            ? 'Your session has expired. Sign in again to continue where you left off.'
+            : undefined
+        }
+      />
+    );
   }
 
   return <>{children}</>;
