@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { normalizePolicyRules, validatePolicyRules } from "../src/validation.js";
 
 test("validatePolicyRules rejects non-object input", () => {
-  const result = validatePolicyRules(null);
-  assert.equal(result.valid, false);
-  assert.ok(result.errors.includes("Policy must be an object"));
+  for (const input of [null, "not an object", []]) {
+    const result = validatePolicyRules(input);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.includes("Policy must be an object"));
+  }
 });
 
 test("validatePolicyRules checks maxTxAmount values", () => {
